@@ -31,6 +31,14 @@ class SQLiteAccess:
 
         self.init_db()
 
+        try:
+            api_key_file = os.environ["FASTAPI_SIMPLE_SECURITY_API_KEY_FILE"]
+        except KeyError:
+            api_key_file = None
+
+        if api_key_file:
+            self.handle_api_key_file(api_key_file)
+
     def init_db(self):
         with sqlite3.connect(self.db_location) as connection:
             c = connection.cursor()
@@ -53,6 +61,32 @@ class SQLiteAccess:
                 connection.commit()
             except sqlite3.OperationalError:
                 pass  # Column already exist
+
+    def handle_api_key_file(self, filepath: str) -> None:
+        """Handle API key file.
+
+        Args:
+            filepath (str): Path to the API key file.
+        """
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"API Key file {filepath} does not exist")
+        keys = []
+        with open(filepath, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#"):
+                    continue
+                if line:
+                    try:
+                        name, api_key, expiration_date = line.split(";")
+                    except ValueError:
+                        raise ValueError(f'API Key file line "{line}" is invalid')
+                    else:
+                        if api_key and name:
+                            keys.append((api_key, name, expiration_date))
+
+        for api_key, name, expiration_date in keys:
+            print(self.insert_key(api_key, name, expiration_date))
 
     def create_key(self, name, never_expire) -> str:
         api_key = str(uuid.uuid4())
@@ -81,6 +115,61 @@ class SQLiteAccess:
             connection.commit()
 
         return api_key
+
+    def insert_key(self, api_key: str, name: str, expiration_date: str) -> str | None:
+        with sqlite3.connect(self.db_location) as connection:
+            c = connection.cursor()
+            # We run the query like check_key but will use the response differently
+            c.execute(
+                """
+            SELECT is_active, total_queries, expiration_date, never_expire
+            FROM fastapi_simple_security
+            WHERE api_key = ?""",
+                (api_key,),
+            )
+
+            response = c.fetchone()
+            if response:
+                return self.renew_key(api_key, expiration_date)
+
+            # Without an expiration date, we set it here
+            if not expiration_date:
+                parsed_expiration_date = (
+                    datetime.utcnow() + timedelta(days=self.expiration_limit)
+                ).isoformat(timespec="seconds")
+            else:
+                # Else: insert new key in database
+                try:
+                    # We parse and re-write to the right timespec
+                    parsed_expiration_date = datetime.fromisoformat(
+                        expiration_date
+                    ).isoformat(timespec="seconds")
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="The expiration date could not be parsed. \
+                            Please use ISO 8601.",
+                    ) from exc
+
+            c.execute(
+                """
+                INSERT INTO fastapi_simple_security
+                (api_key, is_active, never_expire, expiration_date, \
+                    latest_query_date, total_queries, name)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    api_key,
+                    1,
+                    0,
+                    parsed_expiration_date,
+                    None,
+                    0,
+                    name,
+                ),
+            )
+            connection.commit()
+            return f"Key {name} inserted with expiration date {parsed_expiration_date}"
 
     def renew_key(self, api_key: str, new_expiration_date: str) -> Optional[str]:
         with sqlite3.connect(self.db_location) as connection:
