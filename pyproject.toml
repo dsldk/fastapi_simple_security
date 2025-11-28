@@ -1,32 +1,38 @@
-[tool.poetry]
+[project]
 name = "fastapi_simple_security"
 version = "1.2.1"
 description = "API key-based security for FastAPI"
-authors = ["mrtolkien <gary.mialaret@gmail.com>", "nicolaihs <nhs@dsl.dk>"]
-license = "MIT"
-repository = "https://github.com/dsldk/fastapi_simple_security"
+authors = [
+    {name = "mrtolkien", email = "gary.mialaret@gmail.com"},
+    {name = "nicolaihs", email = "nhs@dsl.dk"}
+]
+license = {text = "MIT"}
 readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    # 0.70 is needed to have the TestClient object
+    "fastapi>=0.70",
+    # Necessary as older versions don't work on python 3.10
+    "urllib3>=1.26.12",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.11,<3.13"
-# 0.70 is needed to have the TestClient object
-fastapi = ">=0.70"
-# Necessary as older versions don't work on python 3.10
-urllib3 = ">=1.26.12"
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.3.0",
+    "requests>=2.26.0",
+    "pre-commit>=2.20.0",
+    "pylint>=2.15.4",
+    "isort>=5.10.1",
+    "coverage>=6.5.0",
+]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.0.0"
-black = "^22.3.0"
-requests = "^2.26.0"
-pre-commit = "^2.20.0"
-pylint = "^2.15.4"
-isort = "^5.10.1"
-coverage = "^6.5.0"
-poetry-lock-package = "^0.5.0"
+[project.urls]
+Repository = "https://github.com/dsldk/fastapi_simple_security"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.isort]
 profile = "black"
