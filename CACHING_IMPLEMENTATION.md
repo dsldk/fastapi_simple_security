@@ -9,6 +9,7 @@ Added TTL-based in-memory caching to both SQLite and Elasticsearch backends for 
 ### 1. Core Implementation Files
 
 #### `_elasticsearch_access.py`
+
 - Added `time` module import and `Dict` typing
 - Implemented cache storage: `_cache: Dict[str, Tuple[bool, float]]`
 - Added `cache_ttl` configuration (default: 3600 seconds / 1 hour)
@@ -21,15 +22,18 @@ Added TTL-based in-memory caching to both SQLite and Elasticsearch backends for 
 - Automatic cache invalidation in `revoke_key()` and `renew_key()`
 
 #### `_sqlite_access.py`
+
 - Identical caching implementation for SQLite backend
 - Ensures consistent behavior across both storage backends
 - Same configuration options and performance benefits
 
 #### `_storage_backend.py`
+
 - Added abstract `invalidate_cache()` method to base class
 - Ensures all backends implement cache invalidation
 
 #### `endpoints.py`
+
 - Added `/api-key/invalidate-cache` POST endpoint
 - Requires secret-based authentication
 - Supports invalidating specific key or entire cache
@@ -38,7 +42,9 @@ Added TTL-based in-memory caching to both SQLite and Elasticsearch backends for 
 ### 2. Documentation
 
 #### `CACHING.md` (New)
+
 Comprehensive documentation covering:
+
 - Benefits and use cases
 - Configuration via `FASTAPI_SIMPLE_SECURITY_CACHE_TTL`
 - How caching works (TTL, automatic invalidation)
@@ -48,6 +54,7 @@ Comprehensive documentation covering:
 - Best practices and troubleshooting
 
 #### `README.md` (Updated)
+
 - Added cache TTL configuration to environment variables section
 - Added "Performance & Caching" section highlighting benefits
 - Reference to CACHING.md for details
@@ -55,6 +62,7 @@ Comprehensive documentation covering:
 ### 3. Examples and Tests
 
 #### `example_caching_benchmark.py` (New)
+
 - Practical benchmark script demonstrating performance gains
 - Creates test API key and measures response times
 - Compares cached vs uncached performance
@@ -62,7 +70,9 @@ Comprehensive documentation covering:
 - Calculates load reduction (99% for typical workloads)
 
 #### `tests/test_caching.py` (New)
+
 Test coverage for:
+
 - Cache hit reduces database calls
 - Automatic invalidation on key revocation
 - Manual invalidation endpoint (specific key and full cache)
@@ -78,6 +88,7 @@ export FASTAPI_SIMPLE_SECURITY_CACHE_TTL=3600  # seconds
 ```
 
 **Recommended values:**
+
 - **High security**: 300 (5 minutes)
 - **Balanced** (default): 3600 (1 hour)
 - **Performance-critical**: 7200 (2 hours)
@@ -87,9 +98,11 @@ export FASTAPI_SIMPLE_SECURITY_CACHE_TTL=3600  # seconds
 ### Benchmark Results (Typical)
 
 **Without caching:**
+
 - Every request: Database query (~10-50ms)
 
 **With caching (1-hour TTL):**
+
 - First request: ~10-50ms (database query + cache write)
 - Subsequent requests: ~0.01-0.1ms (memory lookup)
 - **Speed improvement: ~100-1000x faster**
@@ -97,6 +110,7 @@ export FASTAPI_SIMPLE_SECURITY_CACHE_TTL=3600  # seconds
 ### Load Reduction
 
 For 1,000 requests/second with 100 unique API keys:
+
 - **Without cache**: 1,000 DB queries/second
 - **With cache (99% hit rate)**: ~10 DB queries/second
 - **Result: 99% load reduction**
@@ -105,22 +119,26 @@ For 1,000 requests/second with 100 unique API keys:
 
 ### New Endpoint
 
-```
+```http
 POST /api-key/invalidate-cache
 ```
 
 **Authentication:** Requires secret key in header
 
 **Parameters:**
+
 - `api-key` (optional): Specific key to invalidate, or omit to clear all
 
 **Response:**
+
 ```json
 {
   "message": "Cache invalidated for API key: <key>" 
 }
 ```
+
 or
+
 ```json
 {
   "message": "Entire cache has been cleared"
@@ -132,6 +150,7 @@ or
 ⚠️ **Important:** Cached keys remain valid until TTL expires or manual invalidation
 
 **Mitigation:**
+
 1. Use shorter TTL for high-security applications
 2. Call `/invalidate-cache` immediately after emergency revocations
 3. Implement additional security layers (rate limiting, IP filtering)
@@ -155,11 +174,13 @@ async def protected(api_key: str = Depends(api_key_security)):
 ## Testing
 
 Run the new caching tests:
+
 ```bash
 pytest tests/test_caching.py -v
 ```
 
 Run the benchmark example:
+
 ```bash
 # Start your API first
 python example_caching_benchmark.py
@@ -168,6 +189,7 @@ python example_caching_benchmark.py
 ## Backward Compatibility
 
 ✅ **Fully backward compatible**
+
 - Caching is transparent to existing code
 - Default TTL of 1 hour provides immediate benefits
 - No breaking changes to API or behavior
@@ -176,16 +198,19 @@ python example_caching_benchmark.py
 ## Implementation Notes
 
 ### Thread Safety
+
 - Uses `threading.Lock()` for all cache operations
 - Safe for concurrent requests in production
 - No race conditions or data corruption risk
 
 ### Memory Usage
+
 - ~100 bytes per cached key
 - 1,000 keys ≈ 100 KB memory
 - Negligible overhead for typical deployments
 
 ### Cache Coherence
+
 - Automatic invalidation on key revocation/renewal
 - Manual endpoint for emergency invalidation
 - TTL ensures eventual consistency
@@ -193,6 +218,7 @@ python example_caching_benchmark.py
 ## Future Enhancements (Optional)
 
 Potential improvements for future versions:
+
 - Cache metrics/monitoring endpoint
 - Configurable cache size limits
 - LRU eviction for large key sets

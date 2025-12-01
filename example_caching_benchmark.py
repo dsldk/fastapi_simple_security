@@ -49,7 +49,7 @@ def benchmark_api_key_validation(
     return response_times
 
 
-def invalidate_cache(base_url: str, secret_key: str, api_key: str = None):
+def invalidate_cache(base_url: str, secret_key: str, api_key: str | None = None):
     """Invalidate cache for testing purposes."""
     endpoint = f"{base_url}/api-key/invalidate-cache"
     headers = {"api-key": secret_key}
@@ -140,12 +140,12 @@ def main():
     print(f"Time saved per request: {uncached_mean - cached_mean:.2f} ms")
 
     # Calculate load reduction
-    print(f"\n💡 For 1,000 requests/second:")
-    print(f"   Without cache: 1,000 database queries/second")
-    print(f"   With cache (1-hour TTL, 100 unique keys):")
-    print(f"     - Cache hit rate: ~99%")
-    print(f"     - Database queries: ~10/second")
-    print(f"     - Load reduction: 99%")
+    print("\n💡 For 1,000 requests/second:")
+    print("   Without cache: 1,000 database queries/second")
+    print("   With cache (1-hour TTL, 100 unique keys):")
+    print("     - Cache hit rate: ~99%")
+    print("     - Database queries: ~10/second")
+    print("     - Load reduction: 99%")
 
     # Cleanup
     print("\n6. Cleaning up...")
@@ -155,7 +155,7 @@ def main():
         params={"api-key": api_key},
     )
     if revoke_response.status_code == 200:
-        print(f"✓ Test API key revoked")
+        print("✓ Test API key revoked")
 
     print("\n" + "=" * 60)
     print("Benchmark complete!")
