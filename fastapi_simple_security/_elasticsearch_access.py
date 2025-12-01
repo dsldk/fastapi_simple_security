@@ -75,6 +75,40 @@ class ElasticsearchAccess(StorageBackend):
         # Create index if it doesn't exist
         self._init_index()
 
+        try:
+            api_key_file = os.environ["FASTAPI_SIMPLE_SECURITY_API_KEY_FILE"]
+        except KeyError:
+            api_key_file = None
+
+        if api_key_file:
+            self.handle_api_key_file(api_key_file)
+
+    def handle_api_key_file(self, filepath: str) -> None:
+        """Handle API key file.
+
+        Args:
+            filepath (str): Path to the API key file.
+        """
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"API Key file {filepath} does not exist")
+        keys = []
+        with open(filepath, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#"):
+                    continue
+                if line:
+                    try:
+                        name, api_key, expiration_date = line.split(";")
+                    except ValueError:
+                        raise ValueError(f'API Key file line "{line}" is invalid')
+                    else:
+                        if api_key and name:
+                            keys.append((api_key, name, expiration_date))
+
+        for api_key, name, expiration_date in keys:
+            print(self.insert_key(api_key, name, expiration_date))
+
     def _init_index(self):
         """Initialize the Elasticsearch index with proper mappings"""
         if not self.es.indices.exists(index=self.index_name):
