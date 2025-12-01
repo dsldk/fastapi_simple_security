@@ -10,8 +10,10 @@ license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "cachetools>=5.0.0",
+    "elasticsearch[async]>=8.0.0,<9.0.0",
     # 0.70 is needed to have the TestClient object
-    "fastapi>=0.70",
+    "fastapi[standard]>=0.70",
     # Necessary as older versions don't work on python 3.10
     "urllib3>=1.26.12",
 ]

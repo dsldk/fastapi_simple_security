@@ -1,5 +1,5 @@
-"""Interaction with SQLite database.
-"""
+"""Interaction with SQLite database."""
+
 import os
 import sqlite3
 import threading
@@ -7,11 +7,14 @@ import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
+from cachetools import TTLCache
 from fastapi import HTTPException
 from starlette.status import HTTP_404_NOT_FOUND, HTTP_422_UNPROCESSABLE_ENTITY
 
+from fastapi_simple_security._storage_backend import StorageBackend
 
-class SQLiteAccess:
+
+class SQLiteAccess(StorageBackend):
     """Class handling SQLite connection and writes"""
 
     # TODO This should not be a class, a fully functional approach is better
@@ -28,6 +31,23 @@ class SQLiteAccess:
             )
         except KeyError:
             self.expiration_limit = 15
+
+        # Cache configuration
+        try:
+            cache_ttl = int(os.environ.get("FASTAPI_SIMPLE_SECURITY_CACHE_TTL", "3600"))
+        except ValueError:
+            cache_ttl = 3600  # Default 1 hour
+
+        try:
+            cache_maxsize = int(
+                os.environ.get("FASTAPI_SIMPLE_SECURITY_CACHE_MAXSIZE", "10000")
+            )
+        except ValueError:
+            cache_maxsize = 10000
+
+        # TTLCache: automatically handles expiration and LRU eviction
+        self._cache: TTLCache = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
+        self._cache_lock = threading.Lock()
 
         self.init_db()
 
@@ -88,7 +108,7 @@ class SQLiteAccess:
         for api_key, name, expiration_date in keys:
             print(self.insert_key(api_key, name, expiration_date))
 
-    def create_key(self, name, never_expire) -> str:
+    def create_key(self, name, never_expire, project_name: Optional[str] = None) -> str:
         api_key = str(uuid.uuid4())
 
         with sqlite3.connect(self.db_location) as connection:
@@ -116,7 +136,13 @@ class SQLiteAccess:
 
         return api_key
 
-    def insert_key(self, api_key: str, name: str, expiration_date: str) -> str | None:
+    def insert_key(
+        self,
+        api_key: str,
+        name: str,
+        expiration_date: str,
+        project_name: Optional[str] = None,
+    ) -> str | None:
         with sqlite3.connect(self.db_location) as connection:
             c = connection.cursor()
             # We run the query like check_key but will use the response differently
@@ -233,11 +259,14 @@ class SQLiteAccess:
 
             connection.commit()
 
-            response_lines.append(
-                f"The new expiration date for the API key is {parsed_expiration_date}"
-            )
+        # Invalidate cache for this key since status changed
+        self.invalidate_cache(api_key)
 
-            return " ".join(response_lines)
+        response_lines.append(
+            f"The new expiration date for the API key is {parsed_expiration_date}"
+        )
+
+        return " ".join(response_lines)
 
     def revoke_key(self, api_key: str):
         """
@@ -260,14 +289,31 @@ class SQLiteAccess:
 
             connection.commit()
 
+        # Invalidate cache for this key
+        self.invalidate_cache(api_key)
+
     def check_key(self, api_key: str) -> bool:
         """
-        Checks if an API key is valid
+        Checks if an API key is valid (with TTL caching)
 
         Args:
              api_key: the API key to validate
         """
+        # Check cache first (TTLCache handles expiration automatically)
+        with self._cache_lock:
+            cached_result = self._cache.get(api_key)
 
+        if cached_result is not None:
+            # Cache hit
+            if cached_result:
+                # Update usage in background for valid keys
+                threading.Thread(
+                    target=self._update_usage_from_cache,
+                    args=(api_key,),
+                ).start()
+            return cached_result
+
+        # Cache miss - check database
         with sqlite3.connect(self.db_location) as connection:
             c = connection.cursor()
 
@@ -293,9 +339,11 @@ class SQLiteAccess:
                 )
             ):
                 # The key is not valid
+                self._update_cache(api_key, False)
                 return False
             else:
                 # The key is valid
+                self._update_cache(api_key, True)
 
                 # We run the logging in a separate thread as writing takes some time
                 threading.Thread(
@@ -309,11 +357,22 @@ class SQLiteAccess:
                 # We return directly
                 return True
 
+    def _update_cache(self, api_key: str, is_valid: bool):
+        """
+        Updates the cache with validation result
+
+        Args:
+            api_key: the API key
+            is_valid: whether the key is valid
+        """
+        with self._cache_lock:
+            self._cache[api_key] = is_valid
+
     def _update_usage(self, api_key: str, usage_count: int):
         with sqlite3.connect(self.db_location) as connection:
             c = connection.cursor()
 
-            # If we get there, this means it’s an active API key that’s in the database.\
+            # If we get there, this means it's an active API key that's in the database.\
             #   We update the table.
             c.execute(
                 """
@@ -330,13 +389,50 @@ class SQLiteAccess:
 
             connection.commit()
 
-    def get_usage_stats(self) -> List[Tuple[str, bool, bool, str, str, int]]:
+    def _update_usage_from_cache(self, api_key: str):
+        """
+        Updates usage statistics for a cached key (fetches current count first)
+
+        Args:
+            api_key: the API key to update
+        """
+        with sqlite3.connect(self.db_location) as connection:
+            c = connection.cursor()
+
+            c.execute(
+                """
+            SELECT total_queries
+            FROM fastapi_simple_security
+            WHERE api_key = ?""",
+                (api_key,),
+            )
+
+            response = c.fetchone()
+            if response:
+                self._update_usage(api_key, response[0])
+
+    def invalidate_cache(self, api_key: Optional[str] = None):
+        """
+        Invalidates the cache for a specific key or all keys
+
+        Args:
+            api_key: the API key to invalidate, or None to clear entire cache
+        """
+        with self._cache_lock:
+            if api_key:
+                self._cache.pop(api_key, None)
+            else:
+                self._cache.clear()
+
+    def get_usage_stats(
+        self,
+    ) -> List[Tuple[str, bool, bool, str, str, int, Optional[str], Optional[str]]]:
         """
         Returns usage stats for all API keys
 
         Returns:
-            a list of tuples with values being api_key, is_active, expiration_date, \
-                latest_query_date, and total_queries
+            a list of tuples with values being api_key, is_active, never_expire, expiration_date,
+            latest_query_date, total_queries, name, project_name
         """
         with sqlite3.connect(self.db_location) as connection:
             c = connection.cursor()
@@ -344,7 +440,7 @@ class SQLiteAccess:
             c.execute(
                 """
             SELECT api_key, is_active, never_expire, expiration_date, \
-                latest_query_date, total_queries, name
+                latest_query_date, total_queries, name, NULL as project_name
             FROM fastapi_simple_security
             ORDER BY latest_query_date DESC
             """,

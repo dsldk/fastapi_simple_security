@@ -1,5 +1,5 @@
-"""Pytest configuration.
-"""
+"""Pytest configuration."""
+
 import os
 import time
 
@@ -12,6 +12,8 @@ from fastapi_simple_security._sqlite_access import sqlite_access
 # The environment variable needs to be set before importing app
 admin_key_value = "secret"
 os.environ["FASTAPI_SIMPLE_SECURITY_SECRET"] = admin_key_value
+# Force SQLite backend for tests
+os.environ["FASTAPI_SIMPLE_SECURITY_BACKEND"] = "sqlite"
 
 
 @pytest.fixture
@@ -31,5 +33,8 @@ def client():
 
     except FileNotFoundError:
         pass
+
+    # Clear the cache for each test
+    sqlite_access.invalidate_cache()
 
     return TestClient(app)

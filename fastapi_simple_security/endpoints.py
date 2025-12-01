@@ -1,5 +1,5 @@
-"""Endpoints defined by the dependency.
-"""
+"""Endpoints defined by the dependency."""
+
 import os
 from typing import List, Optional
 
@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from fastapi_simple_security._security_secret import secret_based_security
-from fastapi_simple_security._sqlite_access import sqlite_access
+from fastapi_simple_security._backend_factory import storage_backend
 
 api_key_router = APIRouter()
 
@@ -28,12 +28,16 @@ def get_new_api_key(
         False,
         description="if set, the created API key will never be considered expired",
     ),
+    project_name: str = Query(
+        None,
+        description="name of the project using this API key",
+    ),
 ) -> str:
     """
     Returns:
         api_key: a newly generated API key
     """
-    return sqlite_access.create_key(name, never_expires)
+    return storage_backend.create_key(name, never_expires, project_name)
 
 
 @api_key_router.get(
@@ -48,7 +52,7 @@ def revoke_api_key(
     Revokes the usage of the given API key
 
     """
-    return sqlite_access.revoke_key(api_key)
+    return storage_backend.revoke_key(api_key)
 
 
 @api_key_router.get(
@@ -67,7 +71,7 @@ def renew_api_key(
     """
     Renews the chosen API key, reactivating it if it was revoked.
     """
-    return sqlite_access.renew_key(api_key, expiration_date)
+    return storage_backend.renew_key(api_key, expiration_date)
 
 
 @api_key_router.get(
@@ -86,11 +90,15 @@ def insert_api_key(
         alias="expiration-date",
         description="the new expiration date in ISO format",
     ),
+    project_name: str = Query(
+        None,
+        description="name of the project using this API key",
+    ),
 ):
     """
     Inserting a known API key, reactivating it if it was revoked.
     """
-    return sqlite_access.insert_key(api_key, name, expiration_date)
+    return storage_backend.insert_key(api_key, name, expiration_date, project_name)
 
 
 class UsageLog(BaseModel):
@@ -101,6 +109,7 @@ class UsageLog(BaseModel):
     expiration_date: str
     latest_query_date: Optional[str]
     total_queries: int
+    project_name: Optional[str]
 
 
 class UsageLogs(BaseModel):
@@ -129,7 +138,32 @@ def get_api_key_usage_logs():
                 latest_query_date=row[4],
                 total_queries=row[5],
                 name=row[6],
+                project_name=row[7],
             )
-            for row in sqlite_access.get_usage_stats()
+            for row in storage_backend.get_usage_stats()
         ]
     )
+
+
+@api_key_router.post(
+    "/invalidate-cache",
+    dependencies=[Depends(secret_based_security)],
+    include_in_schema=show_endpoints,
+)
+def invalidate_cache(
+    api_key: str = Query(
+        None,
+        alias="api-key",
+        description="the API key to invalidate from cache, or omit to clear entire cache",
+    )
+):
+    """
+    Invalidates the cache for a specific API key or all keys.
+    Use this after manually modifying keys in the database or when you need
+    immediate cache refresh.
+    """
+    storage_backend.invalidate_cache(api_key)
+    if api_key:
+        return {"message": f"Cache invalidated for API key: {api_key}"}
+    else:
+        return {"message": "Entire cache has been cleared"}
