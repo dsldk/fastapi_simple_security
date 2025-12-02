@@ -3,6 +3,7 @@
 import os
 import threading
 import uuid
+import warnings
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
@@ -29,6 +30,14 @@ class ElasticsearchAccess(StorageBackend):
             )
 
         # Get Elasticsearch connection details from environment
+        warnings.warn(
+            f"USING environment VARIABLE: {os.environ.get(
+            'FASTAPI_SIMPLE_SECURITY_ES_HOSTS', 'NOT SET')}"
+        )
+        warnings.warn(
+            f"USING backend: {os.environ.get(
+            'FASTAPI_SIMPLE_SECURITY_BACKEND', 'NOT SET')}"
+        )
         es_hosts = os.environ.get(
             "FASTAPI_SIMPLE_SECURITY_ES_HOSTS", "http://localhost:9200"
         )
