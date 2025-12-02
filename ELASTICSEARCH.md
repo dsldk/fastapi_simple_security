@@ -39,23 +39,36 @@ pip install fastapi_simple_security[elasticsearch]
 
 ```python
 import os
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends
 
-# Configure Elasticsearch backend
+# Configure Elasticsearch backend BEFORE importing fastapi_simple_security
 os.environ["FASTAPI_SIMPLE_SECURITY_BACKEND"] = "elasticsearch"
 os.environ["FASTAPI_SIMPLE_SECURITY_ES_HOSTS"] = "http://localhost:9200"
 
-from fastapi import FastAPI
 from fastapi_simple_security import api_key_router, api_key_security
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Ensure proper Elasticsearch connection cleanup on shutdown"""
+    yield
+    from fastapi_simple_security._backend_factory import storage_backend
+    storage_backend.close()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Include the API key management endpoints
 app.include_router(api_key_router, prefix="/auth", tags=["authentication"])
+
 
 @app.get("/secure-endpoint")
 async def secure_endpoint(api_key: str = Depends(api_key_security)):
     return {"message": "This is a secure endpoint", "api_key": api_key}
 ```
+
+**Important**: For production async FastAPI apps, use the `lifespan` context manager to ensure the Elasticsearch connection is properly closed on shutdown. See `ASYNC_USAGE.md` for detailed async considerations.
 
 ### With Authentication
 

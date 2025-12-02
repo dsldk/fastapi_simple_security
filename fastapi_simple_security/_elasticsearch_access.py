@@ -419,6 +419,14 @@ class ElasticsearchAccess(StorageBackend):
             else:
                 self._cache.clear()
 
+    def close(self):
+        """
+        Closes the Elasticsearch connection.
+        Should be called on application shutdown.
+        """
+        if hasattr(self, "es") and self.es:
+            self.es.close()
+
     def get_usage_stats(
         self,
     ) -> List[Tuple[str, bool, bool, str, str, int, Optional[str], Optional[str]]]:

@@ -3,6 +3,7 @@ Example application demonstrating Elasticsearch backend usage
 """
 
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
 from fastapi_simple_security import api_key_router, api_key_security
 
@@ -19,9 +20,28 @@ os.environ["FASTAPI_SIMPLE_SECURITY_ES_HOSTS"] = "http://localhost:9200"
 # Configure secret for managing API keys
 os.environ["FASTAPI_SIMPLE_SECURITY_SECRET"] = "your-admin-secret"
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for proper startup/shutdown handling.
+    Ensures Elasticsearch connection is properly closed on shutdown.
+    """
+    # Startup
+    print("Application starting up...")
+    yield
+    # Shutdown
+    print("Application shutting down...")
+    from fastapi_simple_security._backend_factory import storage_backend
+
+    storage_backend.close()
+    print("Elasticsearch connection closed")
+
+
 app = FastAPI(
     title="Example API with Elasticsearch Backend",
     description="Demonstrates fastapi_simple_security with Elasticsearch",
+    lifespan=lifespan,
 )
 
 # Include the API key management endpoints

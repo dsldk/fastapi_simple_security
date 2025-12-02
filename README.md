@@ -87,6 +87,7 @@ Environment variables:
   - `sqlite` (default): Local SQLite database
   - `elasticsearch`: Elasticsearch cluster (requires `pip install elasticsearch`)
   - See [ELASTICSEARCH.md](ELASTICSEARCH.md) for Elasticsearch configuration details
+  - See [ASYNC_USAGE.md](ASYNC_USAGE.md) for async FastAPI considerations
 
 - `FASTAPI_SIMPLE_SECURITY_HIDE_DOCS`: Whether or not to hide the API key related endpoints from the documentation
 - `FASTAPI_SIMPLE_SECURITY_DB_LOCATION`: Location of the local sqlite database file (SQLite backend only)

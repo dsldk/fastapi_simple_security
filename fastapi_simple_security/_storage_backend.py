@@ -105,3 +105,11 @@ class StorageBackend(ABC):
             api_key: the API key to invalidate, or None to clear entire cache
         """
         pass
+
+    def close(self):
+        """
+        Closes any open connections to the storage backend.
+        Should be called on application shutdown.
+        Default implementation does nothing - override if cleanup is needed.
+        """
+        pass
