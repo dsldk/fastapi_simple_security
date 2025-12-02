@@ -49,11 +49,29 @@ class ElasticsearchAccess(StorageBackend):
         if es_api_key:
             self.es = Elasticsearch(es_hosts.split(","), api_key=es_api_key)
         elif es_user and es_password:
+            if es_user and es_password:
+                credited_hosts = []
+                for host_name in es_hosts.split(","):
+                    if "://" in host_name:
+                        protocol, rest = host_name.split("://", 1)
+                    else:
+                        protocol = "http"
+                        rest = host_name
+                    host_name = f"{protocol}://{es_user}:{es_password}@{rest}"
+                    credited_hosts.append(host_name)
+                    print("=========0")
+                    print(host_name)
+                es_hosts = ",".join(credited_hosts)
+            print(es_hosts)
             self.es = Elasticsearch(
                 es_hosts.split(","),
-                basic_auth=(es_user, es_password),
                 verify_certs=False,
             )
+            # self.es = Elasticsearch(
+            #     es_hosts.split(","),
+            #     basic_auth=(es_user, es_password),
+            #     verify_certs=False,
+            # )
         else:
             self.es = Elasticsearch(es_hosts.split(","))
 
