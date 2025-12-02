@@ -50,7 +50,9 @@ class ElasticsearchAccess(StorageBackend):
             self.es = Elasticsearch(es_hosts.split(","), api_key=es_api_key)
         elif es_user and es_password:
             self.es = Elasticsearch(
-                es_hosts.split(","), basic_auth=(es_user, es_password)
+                es_hosts.split(","),
+                basic_auth=(es_user, es_password),
+                verify_certs=False,
             )
         else:
             self.es = Elasticsearch(es_hosts.split(","))
