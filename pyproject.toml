@@ -1,6 +1,6 @@
 [project]
 name = "fastapi_simple_security"
-version = "1.3.1"
+version = "1.3.2"
 description = "API key-based security for FastAPI"
 authors = [
     {name = "mrtolkien", email = "gary.mialaret@gmail.com"},
