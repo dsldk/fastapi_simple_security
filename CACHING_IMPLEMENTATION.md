@@ -8,24 +8,25 @@ Added TTL-based in-memory caching to both SQLite and Elasticsearch backends for 
 
 ### 1. Core Implementation Files
 
-#### `_elasticsearch_access.py`
+#### `_sqlite_access.py`
 
-- Added `time` module import and `Dict` typing
-- Implemented cache storage: `_cache: Dict[str, Tuple[bool, float]]`
-- Added `cache_ttl` configuration (default: 3600 seconds / 1 hour)
+- Added `warnings` module import
+- Implemented cache storage using `TTLCache` from `cachetools`
+- Added `cache_ttl` and `cache_maxsize` configuration
 - Thread-safe cache operations using `_cache_lock`
-- Modified `check_key()` to check cache before querying Elasticsearch
+- Modified `check_key()` to check cache before querying database
 - Added cache helper methods:
   - `_update_cache()`: Store validation results
   - `_update_usage_from_cache()`: Update stats for cached keys
   - `invalidate_cache()`: Clear cache entries
 - Automatic cache invalidation in `revoke_key()` and `renew_key()`
+- Added method to load API keys from Elasticsearch index at startup
 
-#### `_sqlite_access.py`
+#### `_elasticsearch_access.py` (Deprecated)
 
-- Identical caching implementation for SQLite backend
-- Ensures consistent behavior across both storage backends
-- Same configuration options and performance benefits
+- Kept for backward compatibility
+- No longer used as a storage backend
+- Caching implementation preserved but not actively used
 
 #### `_storage_backend.py`
 

@@ -1,40 +1,44 @@
-# Implementation Summary: Elasticsearch Backend Support
+# Implementation Summary: Storage Backend Architecture
 
 ## Overview
 
-Added support for using Elasticsearch as an alternative backend for storing API keys, while maintaining full backward compatibility with the existing SQLite backend.
+This project uses SQLite as the storage backend for API keys, with support for loading API keys from Elasticsearch at startup. The Elasticsearch backend implementation is deprecated but kept for backward compatibility.
 
-## Files Created
+## Current Architecture
+
+### Storage Backend
+- **SQLite**: Always used for storing and validating API keys
+- **Elasticsearch**: Optional source for loading API keys at startup (via `FASTAPI_ES_APIKEY_STORAGE_INDEX`)
+
+## Files
 
 ### 1. `_storage_backend.py`
 - Abstract base class defining the interface for all storage backends
-- Methods: `check_key`, `create_key`, `revoke_key`, `renew_key`, `insert_key`, `get_usage_stats`
+- Methods: `check_key`, `create_key`, `revoke_key`, `renew_key`, `insert_key`, `get_usage_stats`, `invalidate_cache`
 
-### 2. `_elasticsearch_access.py`
-- Elasticsearch implementation of the storage backend
-- Uses index name: `fastapi_simple_security`
-- Supports connection via:
-  - Basic authentication (username/password)
-  - API key authentication
-  - Unauthenticated (for local development)
+### 2. `_sqlite_access.py`
+- SQLite implementation of the storage backend (primary backend)
+- Supports loading API keys from:
+  - File (via `FASTAPI_SIMPLE_SECURITY_API_KEY_FILE`)
+  - Elasticsearch index (via `FASTAPI_ES_APIKEY_STORAGE_INDEX`)
+- Includes TTL-based caching for performance
 - Handles API key validation, creation, renewal, revocation, and usage tracking
 
-### 3. `_backend_factory.py`
-- Factory function to select the appropriate backend based on environment variable
+### 3. `_elasticsearch_access.py` (Deprecated)
+- **DEPRECATED**: No longer used as a storage backend
+- Kept for backward compatibility and reference
+- Use `FASTAPI_ES_APIKEY_STORAGE_INDEX` in SQLiteAccess to load keys from Elasticsearch instead
+
+### 4. `_backend_factory.py`
+- Factory function that always returns SQLiteAccess
+- Warns if deprecated `FASTAPI_SIMPLE_SECURITY_BACKEND=elasticsearch` is set
 - Creates a singleton instance used throughout the application
 
-### 4. `ELASTICSEARCH.md`
-- Comprehensive documentation for Elasticsearch backend usage
+### 5. `ELASTICSEARCH.md`
+- Documentation for loading API keys from Elasticsearch into SQLite
 - Configuration examples
-- Migration guide
-- API usage examples
-
-## Files Modified
-
-### 1. `_sqlite_access.py`
-- Now inherits from `StorageBackend` abstract base class
-- Updated method signatures to support `project_name` parameter
-- Modified `get_usage_stats()` to return `project_name` (always NULL for SQLite)
+- Expected document structure
+- Migration guide from deprecated Elasticsearch backend
 
 ### 2. `endpoints.py`
 - Changed from importing `sqlite_access` to `storage_backend`

@@ -1,4 +1,12 @@
-"""Interaction with Elasticsearch."""
+"""Interaction with Elasticsearch.
+
+DEPRECATED: This module is no longer used as a storage backend.
+SQLite is now always used for API key storage.
+
+This module is kept for backward compatibility and for reference.
+To load API keys from an Elasticsearch index, use the FASTAPI_ES_APIKEY_STORAGE_INDEX
+environment variable instead.
+"""
 
 import os
 import threading
@@ -20,7 +28,11 @@ except ImportError:
 
 
 class ElasticsearchAccess(StorageBackend):
-    """Class handling Elasticsearch connection and operations"""
+    """Class handling Elasticsearch connection and operations
+
+    DEPRECATED: This class is no longer used as a storage backend.
+    Use SQLiteAccess with FASTAPI_ES_APIKEY_STORAGE_INDEX to load keys from Elasticsearch.
+    """
 
     def __init__(self):
         if Elasticsearch is None:
@@ -148,6 +160,7 @@ class ElasticsearchAccess(StorageBackend):
 
     def _init_index(self):
         """Initialize the Elasticsearch index with proper mappings"""
+        warnings.warn("Initializing Elasticsearch index")
         if not self.es.indices.exists(index=self.index_name):
             mapping = {
                 "mappings": {

@@ -1,36 +1,46 @@
-# Elasticsearch Backend Configuration
+# Loading API Keys from Elasticsearch
 
-This document describes how to configure and use the Elasticsearch backend for storing API keys instead of the default SQLite database.
+This document describes how to load API keys from an Elasticsearch index into the SQLite backend at startup.
+
+**Note:** As of the current version, Elasticsearch is **no longer used as a storage backend**. SQLite is always used for API key storage. However, you can configure the system to load API keys from an existing Elasticsearch index at application startup.
+
+## Overview
+
+The system always uses SQLite as the storage backend for performance and simplicity. However, if you have existing API keys stored in an Elasticsearch index, you can configure the application to load them into SQLite at startup.
+
+This is useful for:
+
+- Migrating from a previous Elasticsearch-based deployment
+- Synchronizing API keys from a centralized Elasticsearch store
+- Loading API keys from an external system that writes to Elasticsearch
 
 ## Environment Variables
 
-### Backend Selection
+### Required for Loading from Elasticsearch
 
-- **`FASTAPI_SIMPLE_SECURITY_BACKEND`**: Set to `elasticsearch` to use Elasticsearch backend (default: `sqlite`)
+- **`FASTAPI_ES_APIKEY_STORAGE_INDEX`**: Name of the Elasticsearch index to load API keys from
+  - If not set, no keys will be loaded from Elasticsearch
+  - Keys are loaded once at application startup
 
-### Elasticsearch Connection
+### Elasticsearch Connection (Optional)
 
 - **`FASTAPI_SIMPLE_SECURITY_ES_HOSTS`**: Comma-separated list of Elasticsearch hosts (default: `http://localhost:9200`)
 - **`FASTAPI_SIMPLE_SECURITY_ES_USER`**: Elasticsearch username (optional, for basic auth)
 - **`FASTAPI_SIMPLE_SECURITY_ES_PASSWORD`**: Elasticsearch password (optional, for basic auth)
 - **`FASTAPI_SIMPLE_SECURITY_ES_API_KEY`**: Elasticsearch API key (optional, takes precedence over basic auth)
 
-### Other Settings
+### Deprecated
 
-- **`FAST_API_SIMPLE_SECURITY_AUTOMATIC_EXPIRATION`**: Number of days before API keys expire (default: `15`)
+- **`FASTAPI_SIMPLE_SECURITY_BACKEND`**: Previously allowed selection between `sqlite` and `elasticsearch`
+  - Now deprecated - SQLite is always used
+  - Setting this to `elasticsearch` will trigger a deprecation warning
 
 ## Installation
 
-To use the Elasticsearch backend, install the elasticsearch package:
+To load keys from Elasticsearch, install the elasticsearch package:
 
 ```bash
 pip install elasticsearch
-```
-
-Or install with the optional dependency (when available):
-
-```bash
-pip install fastapi_simple_security[elasticsearch]
 ```
 
 ## Usage Example
@@ -39,25 +49,16 @@ pip install fastapi_simple_security[elasticsearch]
 
 ```python
 import os
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
 
-# Configure Elasticsearch backend BEFORE importing fastapi_simple_security
-os.environ["FASTAPI_SIMPLE_SECURITY_BACKEND"] = "elasticsearch"
+# Configure to load API keys from Elasticsearch index
+os.environ["FASTAPI_ES_APIKEY_STORAGE_INDEX"] = "my_apikeys_index"
 os.environ["FASTAPI_SIMPLE_SECURITY_ES_HOSTS"] = "http://localhost:9200"
 
+# Import after setting environment variables
 from fastapi_simple_security import api_key_router, api_key_security
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Ensure proper Elasticsearch connection cleanup on shutdown"""
-    yield
-    from fastapi_simple_security._backend_factory import storage_backend
-    storage_backend.close()
-
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 # Include the API key management endpoints
 app.include_router(api_key_router, prefix="/auth", tags=["authentication"])
@@ -68,15 +69,13 @@ async def secure_endpoint(api_key: str = Depends(api_key_security)):
     return {"message": "This is a secure endpoint", "api_key": api_key}
 ```
 
-**Important**: For production async FastAPI apps, use the `lifespan` context manager to ensure the Elasticsearch connection is properly closed on shutdown. See `ASYNC_USAGE.md` for detailed async considerations.
-
 ### With Authentication
 
 ```python
 import os
 
 # Configure with basic auth
-os.environ["FASTAPI_SIMPLE_SECURITY_BACKEND"] = "elasticsearch"
+os.environ["FASTAPI_ES_APIKEY_STORAGE_INDEX"] = "my_apikeys_index"
 os.environ["FASTAPI_SIMPLE_SECURITY_ES_HOSTS"] = "https://my-es-cluster.com:9200"
 os.environ["FASTAPI_SIMPLE_SECURITY_ES_USER"] = "my_user"
 os.environ["FASTAPI_SIMPLE_SECURITY_ES_PASSWORD"] = "my_password"
@@ -88,97 +87,115 @@ os.environ["FASTAPI_SIMPLE_SECURITY_ES_PASSWORD"] = "my_password"
 import os
 
 # Configure with Elasticsearch API key
-os.environ["FASTAPI_SIMPLE_SECURITY_BACKEND"] = "elasticsearch"
+os.environ["FASTAPI_ES_APIKEY_STORAGE_INDEX"] = "my_apikeys_index"
 os.environ["FASTAPI_SIMPLE_SECURITY_ES_HOSTS"] = "https://my-es-cluster.com:9200"
 os.environ["FASTAPI_SIMPLE_SECURITY_ES_API_KEY"] = "my_elasticsearch_api_key"
 ```
 
-## API Key Management with Project Names
+## Elasticsearch Index Setup
 
-When using the Elasticsearch backend, you can now provide additional metadata for API keys:
+### Index Mappings
 
-### Creating API Keys
+Create your Elasticsearch index with the following mappings to match the CSV file format (`name;api_key;expiration_date`):
 
-```python
-import requests
-
-# Create a new API key with project information
-response = requests.get(
-    "http://localhost:8000/auth/new",
-    params={
-        "name": "user-service-key",
-        "project_name": "user-management-service",
-        "never_expires": False
-    },
-    headers={"secret-key": "your-secret-key"}
-)
-
-api_key = response.text
-print(f"New API key: {api_key}")
+```json
+PUT /my_apikeys_index
+{
+  "mappings": {
+    "properties": {
+      "name": {
+        "type": "keyword"
+      },
+      "api_key": {
+        "type": "keyword"
+      },
+      "expiration_date": {
+        "type": "date",
+        "format": "strict_date_time||strict_date_time_no_millis||epoch_millis"
+      }
+    }
+  }
+}
 ```
 
-### Inserting Existing API Keys
+**Field Types:**
 
-```python
-import requests
+- **`name`**: `keyword` - Short name/identifier for the API key (e.g., "production-service", "user-api")
+- **`api_key`**: `keyword` - The actual API key value (UUID or custom string)
+- **`expiration_date`**: `date` - ISO 8601 formatted expiration date (e.g., "2025-12-31T23:59:59")
 
-# Insert an existing API key
-response = requests.get(
-    "http://localhost:8000/auth/insert",
-    params={
-        "api-key": "existing-uuid-key",
-        "name": "legacy-service-key",
-        "project_name": "legacy-system",
-        "expiration-date": "2025-12-31T23:59:59"
-    },
-    headers={"secret-key": "your-secret-key"}
-)
-```
+**Note:** While the deprecated Elasticsearch backend used additional fields (`is_active`, `never_expire`, `latest_query_date`, `total_queries`, `project_name`), only the three fields above are used when loading keys into SQLite.
 
-## Elasticsearch Index Structure
+## Expected Elasticsearch Document Structure
 
-The Elasticsearch backend creates an index named `fastapi_simple_security` with the following document structure:
+The Elasticsearch index should contain documents matching the CSV format (`name;api_key;expiration_date`):
 
 ```json
 {
-  "api_key": "uuid-string",
-  "is_active": true,
-  "never_expire": false,
-  "expiration_date": "2025-12-31T23:59:59",
-  "latest_query_date": "2025-12-01T10:30:00",
-  "total_queries": 42,
-  "name": "service-key-name",
-  "project_name": "project-name"
+  "name": "production-service",
+  "api_key": "550e8400-e29b-41d4-a716-446655440000",
+  "expiration_date": "2025-12-31T23:59:59"
 }
+```
+
+### Example: Indexing Multiple Keys
+
+```json
+POST /my_apikeys_index/_bulk
+{"index": {"_id": "550e8400-e29b-41d4-a716-446655440000"}}
+{"name": "production-service", "api_key": "550e8400-e29b-41d4-a716-446655440000", "expiration_date": "2025-12-31T23:59:59"}
+{"index": {"_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8"}}
+{"name": "staging-service", "api_key": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "expiration_date": "2026-06-30T23:59:59"}
+{"index": {"_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}}
+{"name": "test-api", "api_key": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "expiration_date": ""}
 ```
 
 ### Field Descriptions
 
-- **`api_key`**: The unique API key (UUID format)
-- **`is_active`**: Whether the key is active or revoked
-- **`never_expire`**: If true, the key will never expire
-- **`expiration_date`**: ISO 8601 formatted expiration date
-- **`latest_query_date`**: Last time the key was used
-- **`total_queries`**: Number of times the key has been used
-- **`name`**: Short name for the key (e.g., "user-service-key")
-- **`project_name`**: Name of the project using this key (e.g., "user-management-service")
+- **`name`**: Short name/identifier for the key (required) - corresponds to first field in CSV
+- **`api_key`**: The unique API key value (required) - corresponds to second field in CSV
+- **`expiration_date`**: ISO 8601 formatted expiration date (optional, can be empty string) - corresponds to third field in CSV
+  - If empty or not provided, a default expiration will be set based on `FAST_API_SIMPLE_SECURITY_AUTOMATIC_EXPIRATION`
 
-## Migration from SQLite to Elasticsearch
+### CSV File Format Equivalence
 
-To migrate existing API keys from SQLite to Elasticsearch:
+The document structure directly matches the CSV file format used by `FASTAPI_SIMPLE_SECURITY_API_KEY_FILE`:
 
-1. Export keys from SQLite database
-2. Change `FASTAPI_SIMPLE_SECURITY_BACKEND` to `elasticsearch`
-3. Use the `/auth/insert` endpoint to import each key with its metadata
+```csv
+# CSV format: name;api_key;expiration_date
+production-service;550e8400-e29b-41d4-a716-446655440000;2025-12-31T23:59:59
+staging-service;6ba7b810-9dad-11d1-80b4-00c04fd430c8;2026-06-30T23:59:59
+test-api;7c9e6679-7425-40de-944b-e07fc1f90ae7;
+```
 
-## Benefits of Elasticsearch Backend
+## How It Works
 
-- **Scalability**: Better handling of large numbers of API keys
-- **Distributed**: Can be deployed across multiple nodes
-- **Search capabilities**: Advanced querying and filtering of API keys
-- **Metadata**: Support for project names and additional context
-- **High availability**: Built-in replication and failover
+1. At application startup, if `FASTAPI_ES_APIKEY_STORAGE_INDEX` is set, the system connects to Elasticsearch
+2. All documents from the specified index are retrieved
+3. Each API key is inserted into the SQLite database using the same logic as loading from a file
+4. If a key already exists in SQLite, it is renewed with the expiration date from Elasticsearch
+5. The Elasticsearch connection is closed after loading is complete
+6. All subsequent API key operations (validation, creation, revocation) use only SQLite
 
-## Backward Compatibility
+## Migration from Elasticsearch Backend
 
-The SQLite backend remains the default and continues to work without any code changes. All existing functionality is preserved when using SQLite.
+If you previously used Elasticsearch as the storage backend (deprecated):
+
+1. Set `FASTAPI_ES_APIKEY_STORAGE_INDEX` to your existing Elasticsearch index name
+2. Remove or ignore `FASTAPI_SIMPLE_SECURITY_BACKEND` (it's deprecated)
+3. Start your application - all keys will be loaded into SQLite
+4. All new API key operations will use SQLite
+5. You can continue to update the Elasticsearch index externally and reload by restarting the application
+
+## Benefits of SQLite Backend
+
+- **Performance**: Faster API key validation, especially with caching
+- **Simplicity**: No external dependencies for basic operation
+- **Reliability**: Local storage, no network dependencies during operation
+- **Portability**: Single file database, easy to backup and migrate
+
+## Limitations
+
+- API keys are loaded only at startup - changes to the Elasticsearch index require an application restart
+- The Elasticsearch index is read-only - no writes occur to Elasticsearch
+- Maximum of 10,000 keys can be loaded from Elasticsearch in one query (Elasticsearch limitation)

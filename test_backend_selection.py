@@ -15,8 +15,8 @@ print(f"Backend type: {type(backend).__name__}")
 assert "SQLiteAccess" in type(backend).__name__, "Should be SQLite backend by default"
 print("✓ SQLite backend works\n")
 
-# Test 2: Elasticsearch backend selection (will fail import if elasticsearch not installed)
-print("Test 2: Testing Elasticsearch backend selection...")
+# Test 2: Verify SQLite is always used (even if elasticsearch is specified)
+print("Test 2: Testing that SQLite is always used...")
 os.environ["FASTAPI_SIMPLE_SECURITY_BACKEND"] = "elasticsearch"
 try:
     # Need to reload to pick up environment change
@@ -24,11 +24,13 @@ try:
     import fastapi_simple_security._backend_factory as factory_module
 
     importlib.reload(factory_module)
-    backend_es = factory_module.get_storage_backend()
-    print(f"Backend type: {type(backend_es).__name__}")
-    print("✓ Elasticsearch backend selected (but may not connect without ES running)")
+    backend_always_sqlite = factory_module.get_storage_backend()
+    print(f"Backend type: {type(backend_always_sqlite).__name__}")
+    assert (
+        "SQLiteAccess" in type(backend_always_sqlite).__name__
+    ), "Should always be SQLite backend"
+    print("✓ SQLite backend always used (elasticsearch option deprecated)")
 except ImportError as e:
-    print(f"⚠ Elasticsearch package not installed: {e}")
-    print("  This is expected - install with: pip install elasticsearch")
+    print(f"⚠ Unexpected import error: {e}")
 
 print("\nAll tests passed!")

@@ -17,8 +17,8 @@ API key based security package for FastAPI, focused on simplicity of use:
 - Key creation, revocation, renewing, and usage logs handled through administrator endpoints
 - No dependencies, only requiring `FastAPI` and the python standard library
 
-This module's SQLite backend is intended for simple one-server API deployments, mostly during development.
-For distributed deployments, use the Elasticsearch backend (see [ELASTICSEARCH.md](ELASTICSEARCH.md) for details).
+This module uses SQLite as the storage backend for all deployments.
+API keys can be loaded from an Elasticsearch index at startup if needed (see [ELASTICSEARCH.md](ELASTICSEARCH.md) for details).
 
 ## Installation
 
@@ -83,11 +83,9 @@ Environment variables:
   - Allows generation of new API keys, revoking of existing ones, and API key usage view
   - It being compromised compromises the security of the API
 
-- `FASTAPI_SIMPLE_SECURITY_BACKEND`: Storage backend selection
-  - `sqlite` (default): Local SQLite database
-  - `elasticsearch`: Elasticsearch cluster (requires `pip install elasticsearch`)
-  - See [ELASTICSEARCH.md](ELASTICSEARCH.md) for Elasticsearch configuration details
-  - See [ASYNC_USAGE.md](ASYNC_USAGE.md) for async FastAPI considerations
+- `FASTAPI_SIMPLE_SECURITY_BACKEND`: **Deprecated** - SQLite is always used as the storage backend
+  - Previously allowed selection between `sqlite` and `elasticsearch`
+  - Setting this to `elasticsearch` will now trigger a deprecation warning
 
 - `FASTAPI_SIMPLE_SECURITY_HIDE_DOCS`: Whether or not to hide the API key related endpoints from the documentation
 - `FASTAPI_SIMPLE_SECURITY_DB_LOCATION`: Location of the local sqlite database file (SQLite backend only)
@@ -104,9 +102,12 @@ Environment variables:
 - `FASTAPI_SIMPLE_SECURITY_CACHE_MAXSIZE`: Maximum number of cached API keys
   - 10000 by default
   - Uses LRU (Least Recently Used) eviction when limit is reached
-- `FASTAPI_SIMPLE_SECURITY_API_KEY_FILE`: File containing that should be inserted or updated on startup
-
+- `FASTAPI_SIMPLE_SECURITY_API_KEY_FILE`: File containing API keys that should be inserted or updated on startup
   - Format: name;api_key;expiration-date
+- `FASTAPI_ES_APIKEY_STORAGE_INDEX`: Elasticsearch index to load API keys from at startup (optional)
+  - Requires `pip install elasticsearch`
+  - See [ELASTICSEARCH.md](ELASTICSEARCH.md) for configuration details
+  - API keys are loaded into SQLite from the specified Elasticsearch index
 
 ## Performance & Caching
 
@@ -153,4 +154,3 @@ docker-compose build && docker-compose up
 
 - More options with sensible defaults
 - Logging per API key?
-- ~~More back-end options for API key storage?~~ ✅ Elasticsearch backend added!
