@@ -55,6 +55,12 @@ class SQLiteAccess(StorageBackend):
         self._cache: TTLCache = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
         self._cache_lock = threading.Lock()
 
+        # Set es_index early to avoid race conditions with background threads
+        try:
+            self.es_index = os.environ["FASTAPI_ES_APIKEY_STORAGE_INDEX"]
+        except KeyError:
+            self.es_index = None
+
         self.init_db()
 
         try:
@@ -64,12 +70,6 @@ class SQLiteAccess(StorageBackend):
 
         if api_key_file:
             self.handle_api_key_file(api_key_file)
-
-        # Load API keys from Elasticsearch index if configured
-        try:
-            self.es_index = os.environ["FASTAPI_ES_APIKEY_STORAGE_INDEX"]
-        except KeyError:
-            self.es_index = None
 
         if self.es_index:
             self.load_keys_from_elasticsearch(self.es_index)
@@ -231,7 +231,7 @@ class SQLiteAccess(StorageBackend):
                 UserWarning,
             )
 
-    def _get_elasticsearch_client(self) -> Optional[Elasticsearch]:
+    def _get_elasticsearch_client(self):
         """Get an Elasticsearch client if configured and available.
 
         Returns:
@@ -284,6 +284,8 @@ class SQLiteAccess(StorageBackend):
         """
 
         def _sync():
+            if self.es_index is None:
+                return
             es = self._get_elasticsearch_client()
             if es is None:
                 return
