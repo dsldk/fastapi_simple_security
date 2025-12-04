@@ -136,9 +136,14 @@ class SQLiteAccess(StorageBackend):
             )
 
         # Get Elasticsearch connection details from environment
-        es_hosts = os.environ.get(
-            "FASTAPI_SIMPLE_SECURITY_ES_HOSTS", "http://localhost:9200"
-        )
+        es_hosts = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_HOSTS")
+        if not es_hosts:
+            warnings.warn(
+                "Environment variable 'FASTAPI_SIMPLE_SECURITY_ES_HOSTS' is not set. "
+                "Defaulting to 'http://localhost:9200'.",
+                UserWarning,
+            )
+            es_hosts = "http://localhost:9200"
         es_user = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_USER")
         es_password = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_PASSWORD")
         es_api_key = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_API_KEY")
@@ -180,7 +185,7 @@ class SQLiteAccess(StorageBackend):
                             "api_key": {"type": "keyword"},
                             "expiration_date": {
                                 "type": "date",
-                                "format": "strict_date_time||strict_date_time_no_millis||epoch_millis",
+                                "format": "strict_date_time_no_millis||strict_date_time||strict_date||epoch_millis",
                             },
                         }
                     }
@@ -300,7 +305,7 @@ class SQLiteAccess(StorageBackend):
                                 "api_key": {"type": "keyword"},
                                 "expiration_date": {
                                     "type": "date",
-                                    "format": "strict_date_time||strict_date_time_no_millis||epoch_millis",
+                                    "format": "strict_date_time_no_millis||strict_date_time||strict_date||epoch_millis",
                                 },
                                 "is_active": {"type": "boolean"},
                             }
@@ -345,7 +350,8 @@ class SQLiteAccess(StorageBackend):
                     1 if never_expire else 0,
                     (
                         datetime.utcnow() + timedelta(days=self.expiration_limit)
-                    ).isoformat(timespec="seconds"),
+                    ).isoformat(timespec="seconds")
+                    + "Z",
                     None,
                     0,
                     name,
@@ -356,7 +362,7 @@ class SQLiteAccess(StorageBackend):
         # Sync to Elasticsearch if configured
         expiration_date = (
             datetime.utcnow() + timedelta(days=self.expiration_limit)
-        ).isoformat(timespec="seconds")
+        ).isoformat(timespec="seconds") + "Z"
         self._sync_to_elasticsearch(api_key, name, expiration_date, is_active=True)
 
         return api_key
@@ -387,14 +393,17 @@ class SQLiteAccess(StorageBackend):
             if not expiration_date:
                 parsed_expiration_date = (
                     datetime.utcnow() + timedelta(days=self.expiration_limit)
-                ).isoformat(timespec="seconds")
+                ).isoformat(timespec="seconds") + "Z"
             else:
                 # Else: insert new key in database
                 try:
                     # We parse and re-write to the right timespec
-                    parsed_expiration_date = datetime.fromisoformat(
-                        expiration_date
-                    ).isoformat(timespec="seconds")
+                    parsed_expiration_date = (
+                        datetime.fromisoformat(expiration_date).isoformat(
+                            timespec="seconds"
+                        )
+                        + "Z"
+                    )
                 except ValueError as exc:
                     raise HTTPException(
                         status_code=HTTP_422_UNPROCESSABLE_ENTITY,
@@ -461,14 +470,17 @@ class SQLiteAccess(StorageBackend):
             if not new_expiration_date:
                 parsed_expiration_date = (
                     datetime.utcnow() + timedelta(days=self.expiration_limit)
-                ).isoformat(timespec="seconds")
+                ).isoformat(timespec="seconds") + "Z"
 
             else:
                 try:
                     # We parse and re-write to the right timespec
-                    parsed_expiration_date = datetime.fromisoformat(
-                        new_expiration_date
-                    ).isoformat(timespec="seconds")
+                    parsed_expiration_date = (
+                        datetime.fromisoformat(new_expiration_date).isoformat(
+                            timespec="seconds"
+                        )
+                        + "Z"
+                    )
                 except ValueError as exc:
                     raise HTTPException(
                         status_code=HTTP_422_UNPROCESSABLE_ENTITY,
@@ -639,7 +651,7 @@ class SQLiteAccess(StorageBackend):
             """,
                 (
                     usage_count + 1,
-                    datetime.utcnow().isoformat(timespec="seconds"),
+                    datetime.utcnow().isoformat(timespec="seconds") + "Z",
                     api_key,
                 ),
             )
