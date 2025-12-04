@@ -100,9 +100,10 @@ class ElasticsearchAccess(StorageBackend):
         # TTLCache: automatically handles expiration and LRU eviction
         self._cache: TTLCache = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
         self._cache_lock = threading.Lock()
+        self._initialized = False
 
-        # Create index if it doesn't exist
-        self._init_index()
+        # Defer index creation until first use to avoid connection during import
+        # self._init_index()
 
         try:
             api_key_file = os.environ["FASTAPI_SIMPLE_SECURITY_API_KEY_FILE"]
@@ -138,6 +139,13 @@ class ElasticsearchAccess(StorageBackend):
         for api_key, name, expiration_date in keys:
             print(self.insert_key(api_key, name, expiration_date))
 
+    def _ensure_initialized(self):
+        """Ensure the Elasticsearch index is initialized (lazy initialization)"""
+        if self._initialized:
+            return
+        self._init_index()
+        self._initialized = True
+
     def _init_index(self):
         """Initialize the Elasticsearch index with proper mappings"""
         if not self.es.indices.exists(index=self.index_name):
@@ -171,6 +179,7 @@ class ElasticsearchAccess(StorageBackend):
         Returns:
             the newly created API key
         """
+        self._ensure_initialized()
         api_key = str(uuid.uuid4())
 
         doc = {
@@ -210,6 +219,7 @@ class ElasticsearchAccess(StorageBackend):
         Returns:
             a message describing the insertion result
         """
+        self._ensure_initialized()
         # Check if key already exists
         try:
             existing = self.es.get(index=self.index_name, id=api_key)
@@ -261,6 +271,7 @@ class ElasticsearchAccess(StorageBackend):
         Returns:
             a message describing the renewal result
         """
+        self._ensure_initialized()
         try:
             result = self.es.get(index=self.index_name, id=api_key)
             if not result["found"]:
@@ -320,6 +331,7 @@ class ElasticsearchAccess(StorageBackend):
         Args:
             api_key: the API key to revoke
         """
+        self._ensure_initialized()
         self.es.update(
             index=self.index_name,
             id=api_key,
@@ -339,6 +351,7 @@ class ElasticsearchAccess(StorageBackend):
         Returns:
             True if the key is valid, False otherwise
         """
+        self._ensure_initialized()
         # Check cache first (TTLCache handles expiration automatically)
         with self._cache_lock:
             cached_result = self._cache.get(api_key)
@@ -466,6 +479,7 @@ class ElasticsearchAccess(StorageBackend):
             a list of tuples with values being api_key, is_active, never_expire, expiration_date,
             latest_query_date, total_queries, name, project_name
         """
+        self._ensure_initialized()
         # Query all documents
         result = self.es.search(
             index=self.index_name,
