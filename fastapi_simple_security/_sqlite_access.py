@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import uuid
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 from cachetools import TTLCache
@@ -606,7 +606,10 @@ class SQLiteAccess(StorageBackend):
                 # Expired key
                 or (
                     (not response[3])
-                    and (datetime.fromisoformat(response[2]) < datetime.utcnow())
+                    and (
+                        datetime.fromisoformat(response[2].replace("Z", "+00:00"))
+                        < datetime.now(timezone.utc)
+                    )
                 )
             ):
                 # The key is not valid
