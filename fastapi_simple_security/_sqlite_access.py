@@ -3,8 +3,10 @@
 import os
 import sqlite3
 import threading
+import time
 import uuid
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
@@ -128,6 +130,11 @@ class SQLiteAccess(StorageBackend):
         self._cache: TTLCache = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
         self._cache_lock = threading.Lock()
 
+        # ThreadPoolExecutor for bounded ES sync operations (max 5 concurrent syncs)
+        self._es_sync_executor = ThreadPoolExecutor(
+            max_workers=5, thread_name_prefix="es_sync"
+        )
+
         # Set es_index early to avoid race conditions with background threads
         try:
             self.es_index = os.environ["FASTAPI_ES_APIKEY_STORAGE_INDEX"]
@@ -197,7 +204,7 @@ class SQLiteAccess(StorageBackend):
             print(self.insert_key(api_key, name, expiration_date))
 
     def load_keys_from_elasticsearch(self, index_name: str) -> None:
-        """Load API keys from Elasticsearch index into SQLite.
+        """Load API keys from Elasticsearch index into SQLite with retry logic.
 
         Args:
             index_name (str): Name of the Elasticsearch index to load keys from.
@@ -208,64 +215,97 @@ class SQLiteAccess(StorageBackend):
                 "Install it with: pip install elasticsearch"
             )
 
-        es = self._get_elasticsearch_client()
-        if es is None:
-            warnings.warn(
-                "Failed to connect to Elasticsearch. Skipping key loading.",
-                UserWarning,
-            )
-            return
+        max_retries = 3
+        retry_delay = 2  # seconds
 
-        try:
-            # Ensure index exists with proper mappings
-            self._ensure_es_index_exists(es, index_name)
+        for attempt in range(max_retries):
+            es = None
+            try:
+                es = self._get_elasticsearch_client()
+                if es is None:
+                    warnings.warn(
+                        f"Failed to connect to Elasticsearch (attempt {attempt + 1}/{max_retries}). "
+                        "Skipping key loading.",
+                        UserWarning,
+                    )
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                        continue
+                    return
 
-            # Query all documents from the index
-            result = es.search(
-                index=index_name,
-                body={
-                    "query": {"match_all": {}},
-                    "size": 10000,
-                },
-            )
+                # Verify connection
+                if not es.ping():
+                    raise ConnectionError("Elasticsearch ping failed")
 
-            keys_loaded = 0
-            for hit in result["hits"]["hits"]:
-                doc = hit["_source"]
-                api_key = doc.get("api_key")
-                name = doc.get("name", "")
-                es_date = doc.get("expiration_date", "")
-                # Convert ES date (YYYY-MM-DD) to SQLite format
-                expiration_date = (
-                    self._es_date_to_sqlite_date(es_date) if es_date else ""
+                # Ensure index exists with proper mappings
+                self._ensure_es_index_exists(es, index_name)
+
+                # Query all documents from the index
+                result = es.search(
+                    index=index_name,
+                    body={
+                        "query": {"match_all": {}},
+                        "size": 10000,
+                    },
                 )
 
-                if api_key:
+                keys_loaded = 0
+                loaded_keys = []
+                for hit in result["hits"]["hits"]:
+                    doc = hit["_source"]
+                    api_key = doc.get("api_key")
+                    name = doc.get("name", "")
+                    es_date = doc.get("expiration_date", "")
+                    # Convert ES date (YYYY-MM-DD) to SQLite format
+                    expiration_date = (
+                        self._es_date_to_sqlite_date(es_date) if es_date else ""
+                    )
+
+                    if api_key:
+                        try:
+                            self.insert_key(api_key, name, expiration_date)
+                            keys_loaded += 1
+                            loaded_keys.append(api_key)
+                        except Exception as e:
+                            warnings.warn(
+                                f"Failed to load API key '{name}' from Elasticsearch: {e}",
+                                UserWarning,
+                            )
+
+                warnings.warn(
+                    f"Loaded {keys_loaded} API keys from Elasticsearch index '{index_name}'",
+                    UserWarning,
+                )
+
+                # Warm cache with loaded keys for better cold-start performance
+                self._warm_cache(loaded_keys)
+
+                # Success - break retry loop
+                break
+
+            except Exception as e:
+                warnings.warn(
+                    f"Error loading API keys from Elasticsearch (attempt {attempt + 1}/{max_retries}): {e}",
+                    UserWarning,
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                else:
+                    warnings.warn(
+                        "Failed to load API keys from Elasticsearch after all retries. "
+                        "Application will start with empty/existing database.",
+                        UserWarning,
+                    )
+            finally:
+                # Always close ES connection
+                if es is not None:
                     try:
-                        self.insert_key(api_key, name, expiration_date)
-                        keys_loaded += 1
-                    except Exception as e:
-                        warnings.warn(
-                            f"Failed to load API key '{name}' from Elasticsearch: {e}",
-                            UserWarning,
-                        )
-
-            warnings.warn(
-                f"Loaded {keys_loaded} API keys from Elasticsearch index '{index_name}'",
-                UserWarning,
-            )
-
-            # Close the Elasticsearch connection
-            es.close()
-
-        except Exception as e:
-            warnings.warn(
-                f"Error connecting to Elasticsearch to load API keys: {e}",
-                UserWarning,
-            )
+                        es.close()
+                    except Exception:
+                        pass  # Ignore errors during cleanup
 
     def _get_elasticsearch_client(self):
-        """Get an Elasticsearch client if configured and available.
+        """Get an Elasticsearch client with timeouts and proper configuration.
 
         Returns:
             Elasticsearch client or None if not configured/available
@@ -281,8 +321,17 @@ class SQLiteAccess(StorageBackend):
             es_password = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_PASSWORD")
             es_api_key = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_API_KEY")
 
+            # Connection timeout configuration for AWS/Docker environments
+            connection_params = {
+                "request_timeout": 30,  # 30 seconds for requests
+                "max_retries": 2,
+                "retry_on_timeout": True,
+            }
+
             if es_api_key:
-                return Elasticsearch(es_hosts.split(","), api_key=es_api_key)
+                return Elasticsearch(
+                    es_hosts.split(","), api_key=es_api_key, **connection_params
+                )
             elif es_user and es_password:
                 # Build authenticated host URLs
                 auth_hosts = []
@@ -293,12 +342,14 @@ class SQLiteAccess(StorageBackend):
                         protocol = "http"
                         rest = host
                     auth_hosts.append(f"{protocol}://{es_user}:{es_password}@{rest}")
-                return Elasticsearch(auth_hosts, verify_certs=False)
+                return Elasticsearch(
+                    auth_hosts, verify_certs=False, **connection_params
+                )
             else:
-                return Elasticsearch(es_hosts.split(","))
+                return Elasticsearch(es_hosts.split(","), **connection_params)
         except Exception as e:
             warnings.warn(
-                f"Failed to connect to Elasticsearch: {e}",
+                f"Failed to create Elasticsearch client: {e}",
                 UserWarning,
             )
             return None
@@ -329,7 +380,7 @@ class SQLiteAccess(StorageBackend):
     def _sync_to_elasticsearch(
         self, api_key: str, name: str, expiration_date: str, is_active: bool = True
     ):
-        """Sync an API key to Elasticsearch in the background.
+        """Sync an API key to Elasticsearch using bounded thread pool.
 
         Args:
             api_key: The API key
@@ -341,11 +392,21 @@ class SQLiteAccess(StorageBackend):
         def _sync():
             if self.es_index is None:
                 return
-            es = self._get_elasticsearch_client()
-            if es is None:
-                return
 
+            es = None
             try:
+                es = self._get_elasticsearch_client()
+                if es is None:
+                    return
+
+                # Verify connection before operations
+                if not es.ping():
+                    warnings.warn(
+                        "Elasticsearch connection not available for sync",
+                        UserWarning,
+                    )
+                    return
+
                 # Ensure index exists with proper mappings
                 self._ensure_es_index_exists(es, self.es_index)
 
@@ -361,15 +422,21 @@ class SQLiteAccess(StorageBackend):
                 }
                 es.index(index=self.es_index, id=api_key, document=doc)
                 es.indices.refresh(index=self.es_index)
-                es.close()
             except Exception as e:
                 warnings.warn(
                     f"Failed to sync API key to Elasticsearch: {e}",
                     UserWarning,
                 )
+            finally:
+                # Always close connection
+                if es is not None:
+                    try:
+                        es.close()
+                    except Exception:
+                        pass  # Ignore cleanup errors
 
-        # Run sync in background thread to not block
-        threading.Thread(target=_sync, daemon=True).start()
+        # Use bounded thread pool instead of unbounded thread creation
+        self._es_sync_executor.submit(_sync)
 
     def create_key(self, name, never_expire, project_name: Optional[str] = None) -> str:
         api_key = str(uuid.uuid4())
@@ -697,6 +764,62 @@ class SQLiteAccess(StorageBackend):
                 self._cache.pop(api_key, None)
             else:
                 self._cache.clear()
+
+    def _warm_cache(self, api_keys: List[str]):
+        """Warm the cache with valid API keys for better cold-start performance.
+
+        Args:
+            api_keys: List of API keys to warm the cache with
+        """
+        if not api_keys:
+            return
+
+        with sqlite3.connect(self.db_location) as connection:
+            c = connection.cursor()
+
+            warmed_count = 0
+            for api_key in api_keys:
+                try:
+                    c.execute(
+                        """
+                    SELECT is_active, expiration_date, never_expire
+                    FROM fastapi_simple_security
+                    WHERE api_key = ?""",
+                        (api_key,),
+                    )
+                    response = c.fetchone()
+
+                    if response:
+                        is_active = response[0]
+                        expiration_date = response[1]
+                        never_expire = response[2]
+
+                        # Check if key is valid
+                        is_valid = is_active == 1 and (
+                            never_expire
+                            or datetime.fromisoformat(
+                                expiration_date.replace("Z", "+00:00")
+                            )
+                            >= datetime.now(timezone.utc)
+                        )
+
+                        # Warm cache
+                        with self._cache_lock:
+                            self._cache[api_key] = is_valid
+
+                        if is_valid:
+                            warmed_count += 1
+                except Exception as e:
+                    warnings.warn(
+                        f"Failed to warm cache for key: {e}",
+                        UserWarning,
+                    )
+
+        if warmed_count > 0:
+            warnings.warn(
+                f"Warmed cache with {warmed_count} valid API keys",
+                UserWarning,
+            )
 
     def get_usage_stats(
         self,
