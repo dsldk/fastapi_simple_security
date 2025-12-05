@@ -25,6 +25,79 @@ class SQLiteAccess(StorageBackend):
 
     # TODO This should not be a class, a fully functional approach is better
 
+    @staticmethod
+    def _sqlite_date_to_es_date(sqlite_date: str) -> str:
+        """Convert SQLite date format (ISO 8601 with seconds+Z) to ES format (YYYY-MM-DD).
+
+        Args:
+            sqlite_date: Date in format 'YYYY-MM-DDTHH:MM:SSZ'
+
+        Returns:
+            Date in format 'YYYY-MM-DD'
+        """
+        if not sqlite_date:
+            return ""
+        try:
+            dt = datetime.fromisoformat(sqlite_date.rstrip("Z"))
+            return dt.strftime("%Y-%m-%d")
+        except (ValueError, AttributeError):
+            return ""
+
+    @staticmethod
+    def _es_date_to_sqlite_date(es_date: str) -> str:
+        """Convert ES date format (YYYY-MM-DD) to SQLite format (ISO 8601 with seconds+Z).
+
+        Args:
+            es_date: Date in format 'YYYY-MM-DD' or ISO 8601
+
+        Returns:
+            Date in format 'YYYY-MM-DDTHH:MM:SSZ'
+        """
+        if not es_date:
+            return ""
+        try:
+            # Try parsing as simple date first
+            if len(es_date) == 10 and es_date.count("-") == 2:
+                dt = datetime.strptime(es_date, "%Y-%m-%d")
+            else:
+                # Fall back to ISO format parsing
+                dt = datetime.fromisoformat(es_date.rstrip("Z"))
+            return dt.isoformat(timespec="seconds") + "Z"
+        except (ValueError, AttributeError):
+            return ""
+
+    @staticmethod
+    def _parse_expiration_date(expiration_date: str, expiration_limit: int) -> str:
+        """Parse and normalize an expiration date to SQLite format.
+
+        Args:
+            expiration_date: Input date string (can be empty, YYYY-MM-DD, or ISO 8601)
+            expiration_limit: Number of days to add if no date provided
+
+        Returns:
+            Date in SQLite format 'YYYY-MM-DDTHH:MM:SSZ'
+
+        Raises:
+            HTTPException: If date cannot be parsed
+        """
+        if not expiration_date:
+            return (datetime.utcnow() + timedelta(days=expiration_limit)).isoformat(
+                timespec="seconds"
+            ) + "Z"
+
+        try:
+            # Try simple date format first
+            if len(expiration_date) == 10 and expiration_date.count("-") == 2:
+                dt = datetime.strptime(expiration_date, "%Y-%m-%d")
+            else:
+                dt = datetime.fromisoformat(expiration_date.rstrip("Z"))
+            return dt.isoformat(timespec="seconds") + "Z"
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="The expiration date could not be parsed. Please use ISO 8601 or YYYY-MM-DD format.",
+            ) from exc
+
     def __init__(self):
         try:
             self.db_location = os.environ["FASTAPI_SIMPLE_SECURITY_DB_LOCATION"]
@@ -135,66 +208,17 @@ class SQLiteAccess(StorageBackend):
                 "Install it with: pip install elasticsearch"
             )
 
-        # Get Elasticsearch connection details from environment
-        es_hosts = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_HOSTS")
-        if not es_hosts:
+        es = self._get_elasticsearch_client()
+        if es is None:
             warnings.warn(
-                "Environment variable 'FASTAPI_SIMPLE_SECURITY_ES_HOSTS' is not set. "
-                "Defaulting to 'http://localhost:9200'.",
+                "Failed to connect to Elasticsearch. Skipping key loading.",
                 UserWarning,
             )
-            es_hosts = "http://localhost:9200"
-        es_user = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_USER")
-        es_password = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_PASSWORD")
-        es_api_key = os.environ.get("FASTAPI_SIMPLE_SECURITY_ES_API_KEY")
+            return
 
-        # Initialize Elasticsearch client
         try:
-            if es_api_key:
-                es = Elasticsearch(es_hosts.split(","), api_key=es_api_key)
-            elif es_user and es_password:
-                credited_hosts = []
-                for host_name in es_hosts.split(","):
-                    if "://" in host_name:
-                        protocol, rest = host_name.split("://", 1)
-                    else:
-                        protocol = "http"
-                        rest = host_name
-                    host_name = f"{protocol}://{es_user}:{es_password}@{rest}"
-                    credited_hosts.append(host_name)
-                es_hosts = ",".join(credited_hosts)
-                es = Elasticsearch(
-                    es_hosts.split(","),
-                    verify_certs=False,
-                )
-            else:
-                es = Elasticsearch(es_hosts.split(","))
-
-            # Check if index exists, create it if not
-            if not es.indices.exists(index=index_name):
-                warnings.warn(
-                    f"Elasticsearch index '{index_name}' does not exist. Creating it with default mappings.",
-                    UserWarning,
-                )
-
-                # Create index with mappings matching CSV format: name;api_key;expiration_date
-                mapping = {
-                    "mappings": {
-                        "properties": {
-                            "name": {"type": "keyword"},
-                            "api_key": {"type": "keyword"},
-                            "expiration_date": {
-                                "type": "date",
-                                "format": "strict_date_time_no_millis||strict_date_time||strict_date||epoch_millis",
-                            },
-                        }
-                    }
-                }
-                es.indices.create(index=index_name, body=mapping)
-                warnings.warn(
-                    f"Created Elasticsearch index '{index_name}' with mappings for name, api_key, and expiration_date",
-                    UserWarning,
-                )
+            # Ensure index exists with proper mappings
+            self._ensure_es_index_exists(es, index_name)
 
             # Query all documents from the index
             result = es.search(
@@ -210,7 +234,11 @@ class SQLiteAccess(StorageBackend):
                 doc = hit["_source"]
                 api_key = doc.get("api_key")
                 name = doc.get("name", "")
-                expiration_date = doc.get("expiration_date", "")
+                es_date = doc.get("expiration_date", "")
+                # Convert ES date (YYYY-MM-DD) to SQLite format
+                expiration_date = (
+                    self._es_date_to_sqlite_date(es_date) if es_date else ""
+                )
 
                 if api_key:
                     try:
@@ -242,7 +270,7 @@ class SQLiteAccess(StorageBackend):
         Returns:
             Elasticsearch client or None if not configured/available
         """
-        if Elasticsearch is None or not self.es_index:
+        if Elasticsearch is None:
             return None
 
         try:
@@ -256,17 +284,16 @@ class SQLiteAccess(StorageBackend):
             if es_api_key:
                 return Elasticsearch(es_hosts.split(","), api_key=es_api_key)
             elif es_user and es_password:
-                credited_hosts = []
-                for host_name in es_hosts.split(","):
-                    if "://" in host_name:
-                        protocol, rest = host_name.split("://", 1)
+                # Build authenticated host URLs
+                auth_hosts = []
+                for host in es_hosts.split(","):
+                    if "://" in host:
+                        protocol, rest = host.split("://", 1)
                     else:
                         protocol = "http"
-                        rest = host_name
-                    host_name = f"{protocol}://{es_user}:{es_password}@{rest}"
-                    credited_hosts.append(host_name)
-                es_hosts = ",".join(credited_hosts)
-                return Elasticsearch(es_hosts.split(","), verify_certs=False)
+                        rest = host
+                    auth_hosts.append(f"{protocol}://{es_user}:{es_password}@{rest}")
+                return Elasticsearch(auth_hosts, verify_certs=False)
             else:
                 return Elasticsearch(es_hosts.split(","))
         except Exception as e:
@@ -276,6 +303,29 @@ class SQLiteAccess(StorageBackend):
             )
             return None
 
+    def _ensure_es_index_exists(self, es, index_name: str) -> None:
+        """Ensure Elasticsearch index exists with proper mappings.
+
+        Args:
+            es: Elasticsearch client
+            index_name: Name of the index to create
+        """
+        if not es.indices.exists(index=index_name):
+            mapping = {
+                "mappings": {
+                    "properties": {
+                        "name": {"type": "keyword"},
+                        "api_key": {"type": "keyword"},
+                        "expiration_date": {
+                            "type": "date",
+                            "format": "strict_date||epoch_millis",
+                        },
+                        "is_active": {"type": "boolean"},
+                    }
+                }
+            }
+            es.indices.create(index=index_name, body=mapping)
+
     def _sync_to_elasticsearch(
         self, api_key: str, name: str, expiration_date: str, is_active: bool = True
     ):
@@ -284,7 +334,7 @@ class SQLiteAccess(StorageBackend):
         Args:
             api_key: The API key
             name: The key name
-            expiration_date: ISO 8601 expiration date
+            expiration_date: SQLite format expiration date (YYYY-MM-DDTHH:MM:SSZ)
             is_active: Whether the key is active (for revocation)
         """
 
@@ -297,27 +347,16 @@ class SQLiteAccess(StorageBackend):
 
             try:
                 # Ensure index exists with proper mappings
-                if not es.indices.exists(index=self.es_index):
-                    mapping = {
-                        "mappings": {
-                            "properties": {
-                                "name": {"type": "keyword"},
-                                "api_key": {"type": "keyword"},
-                                "expiration_date": {
-                                    "type": "date",
-                                    "format": "strict_date_time_no_millis||strict_date_time||strict_date||epoch_millis",
-                                },
-                                "is_active": {"type": "boolean"},
-                            }
-                        }
-                    }
-                    es.indices.create(index=self.es_index, body=mapping)
+                self._ensure_es_index_exists(es, self.es_index)
+
+                # Convert SQLite date to simple ES date format (YYYY-MM-DD)
+                es_date = self._sqlite_date_to_es_date(expiration_date)
 
                 # Index or update the document
                 doc = {
                     "name": name,
                     "api_key": api_key,
-                    "expiration_date": expiration_date,
+                    "expiration_date": es_date,
                     "is_active": is_active,
                 }
                 es.index(index=self.es_index, id=api_key, document=doc)
@@ -334,6 +373,9 @@ class SQLiteAccess(StorageBackend):
 
     def create_key(self, name, never_expire, project_name: Optional[str] = None) -> str:
         api_key = str(uuid.uuid4())
+        expiration_date = (
+            datetime.utcnow() + timedelta(days=self.expiration_limit)
+        ).isoformat(timespec="seconds") + "Z"
 
         with sqlite3.connect(self.db_location) as connection:
             c = connection.cursor()
@@ -348,10 +390,7 @@ class SQLiteAccess(StorageBackend):
                     api_key,
                     1,
                     1 if never_expire else 0,
-                    (
-                        datetime.utcnow() + timedelta(days=self.expiration_limit)
-                    ).isoformat(timespec="seconds")
-                    + "Z",
+                    expiration_date,
                     None,
                     0,
                     name,
@@ -360,9 +399,6 @@ class SQLiteAccess(StorageBackend):
             connection.commit()
 
         # Sync to Elasticsearch if configured
-        expiration_date = (
-            datetime.utcnow() + timedelta(days=self.expiration_limit)
-        ).isoformat(timespec="seconds") + "Z"
         self._sync_to_elasticsearch(api_key, name, expiration_date, is_active=True)
 
         return api_key
@@ -389,27 +425,10 @@ class SQLiteAccess(StorageBackend):
             if response:
                 return self.renew_key(api_key, expiration_date)
 
-            # Without an expiration date, we set it here
-            if not expiration_date:
-                parsed_expiration_date = (
-                    datetime.utcnow() + timedelta(days=self.expiration_limit)
-                ).isoformat(timespec="seconds") + "Z"
-            else:
-                # Else: insert new key in database
-                try:
-                    # We parse and re-write to the right timespec
-                    parsed_expiration_date = (
-                        datetime.fromisoformat(expiration_date).isoformat(
-                            timespec="seconds"
-                        )
-                        + "Z"
-                    )
-                except ValueError as exc:
-                    raise HTTPException(
-                        status_code=HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail="The expiration date could not be parsed. \
-                            Please use ISO 8601.",
-                    ) from exc
+            # Parse and normalize the expiration date
+            parsed_expiration_date = self._parse_expiration_date(
+                expiration_date, self.expiration_limit
+            )
 
             c.execute(
                 """
@@ -466,27 +485,10 @@ class SQLiteAccess(StorageBackend):
                     "This API key was revoked and has been reactivated."
                 )
 
-            # Without an expiration date, we set it here
-            if not new_expiration_date:
-                parsed_expiration_date = (
-                    datetime.utcnow() + timedelta(days=self.expiration_limit)
-                ).isoformat(timespec="seconds") + "Z"
-
-            else:
-                try:
-                    # We parse and re-write to the right timespec
-                    parsed_expiration_date = (
-                        datetime.fromisoformat(new_expiration_date).isoformat(
-                            timespec="seconds"
-                        )
-                        + "Z"
-                    )
-                except ValueError as exc:
-                    raise HTTPException(
-                        status_code=HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail="The expiration date could not be parsed. \
-                            Please use ISO 8601.",
-                    ) from exc
+            # Parse and normalize the expiration date
+            parsed_expiration_date = self._parse_expiration_date(
+                new_expiration_date, self.expiration_limit
+            )
 
             c.execute(
                 """
