@@ -147,16 +147,14 @@ class SQLiteAccess(StorageBackend):
 
         self.init_db()
 
+        # Store API key file path for deferred loading
         try:
-            api_key_file = os.environ["FASTAPI_SIMPLE_SECURITY_API_KEY_FILE"]
+            self.api_key_file = os.environ["FASTAPI_SIMPLE_SECURITY_API_KEY_FILE"]
         except KeyError:
-            api_key_file = None
+            self.api_key_file = None
 
-        if api_key_file:
-            self.handle_api_key_file(api_key_file)
-
-        # ES loading is now deferred to first check_key call to avoid
-        # connection issues during initialization (especially in AWS setups)
+        # Both API key file and ES loading are now deferred to first check_key call
+        # to avoid connection issues during initialization (especially in AWS setups)
 
     def init_db(self):
         with sqlite3.connect(self.db_location) as connection:
@@ -641,12 +639,19 @@ class SQLiteAccess(StorageBackend):
         Args:
              api_key: the API key to validate
         """
-        # Lazy load ES keys on first check_key call
-        if self.es_index and not self._es_keys_loaded:
+        # Lazy load API key file and ES keys on first check_key call
+        if not self._es_keys_loaded:
             with self._es_loading_lock:
                 # Double-check pattern to avoid race conditions
                 if not self._es_keys_loaded:
-                    self.load_keys_from_elasticsearch(self.es_index)
+                    # Load API key file first (if configured)
+                    if self.api_key_file:
+                        self.handle_api_key_file(self.api_key_file)
+
+                    # Then load from Elasticsearch (if configured)
+                    if self.es_index:
+                        self.load_keys_from_elasticsearch(self.es_index)
+
                     self._es_keys_loaded = True
 
         # Check cache first (TTLCache handles expiration automatically)
