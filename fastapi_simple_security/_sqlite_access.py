@@ -141,6 +141,10 @@ class SQLiteAccess(StorageBackend):
         except KeyError:
             self.es_index = None
 
+        # Deferred ES loading flag - load on first check_key call
+        self._es_keys_loaded = False
+        self._es_loading_lock = threading.Lock()
+
         self.init_db()
 
         try:
@@ -151,8 +155,8 @@ class SQLiteAccess(StorageBackend):
         if api_key_file:
             self.handle_api_key_file(api_key_file)
 
-        if self.es_index:
-            self.load_keys_from_elasticsearch(self.es_index)
+        # ES loading is now deferred to first check_key call to avoid
+        # connection issues during initialization (especially in AWS setups)
 
     def init_db(self):
         with sqlite3.connect(self.db_location) as connection:
@@ -637,6 +641,14 @@ class SQLiteAccess(StorageBackend):
         Args:
              api_key: the API key to validate
         """
+        # Lazy load ES keys on first check_key call
+        if self.es_index and not self._es_keys_loaded:
+            with self._es_loading_lock:
+                # Double-check pattern to avoid race conditions
+                if not self._es_keys_loaded:
+                    self.load_keys_from_elasticsearch(self.es_index)
+                    self._es_keys_loaded = True
+
         # Check cache first (TTLCache handles expiration automatically)
         with self._cache_lock:
             cached_result = self._cache.get(api_key)
